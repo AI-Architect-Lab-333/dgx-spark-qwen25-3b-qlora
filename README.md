@@ -1,10 +1,10 @@
 # Guide: QLoRA NF4 of Qwen2.5-3B-Instruct on one DGX Spark — the loss fell, the four-line answer did not
 
-**The problem this guide solves**: the GPU is already free, and `Qwen/Qwen2.5-3B-Instruct` is tuned with QLoRA NF4. The base weights stay on disk. Only the adapter is saved. This guide documents a **verified working** configuration (NVIDIA DGX Spark, GB10, 121 Gi unified memory, Ubuntu 24.04.4 LTS / DGX OS, aarch64, September 2026): torch 2.12.0+cu130, bitsandbytes 0.49.2, peft 0.19.1, transformers 4.57.6, in `$HOME/jupyterlab/.venv`. Two runs finished on 26 September 2026. The same questions were then sent to `Qwen3.8-27B` UD-Q6_K_XL, served by the existing `llama-server`, with no training.
+**The problem this guide solves**: can a small model, fine-tuned for a few minutes on a single GPU, learn to write a troubleshooting note the way the guides on this account do? The target is a four-line answer — `Symptom`, `Cause`, `What was measured`, `What this run did not show` — in which each score stays next to the date of the run that produced it. The questions come from a real case where two runs, four days apart, gave different scores for the same check, so filing a score under the wrong date is the typical mistake. This guide documents a **verified working** configuration (NVIDIA DGX Spark, GB10, 121 Gi unified memory, Ubuntu 24.04.4 LTS / DGX OS, aarch64, September 2026): QLoRA NF4 of `Qwen/Qwen2.5-3B-Instruct` with torch 2.12.0+cu130, bitsandbytes 0.49.2, peft 0.19.1 and transformers 4.57.6, compared with `Qwen3.8-27B` UD-Q6_K_XL served untrained by `llama-server`. Every number below comes from the runs of 26 September 2026.
 
-**Epoch loss 4.111 to 3.397 did not install the guide answer**, including on a row the model had trained on. **One worked example in the thread made the third question answer the example.** **The four headings came out in order, and 0.675 then 0.674 were filed as the measurement that belonged to 0.527.** **At 280 tokens the 27B content field was empty** because the budget went into `reasoning_content`. **The synthetic holdout went from 0/8 to 8/8, and the three real questions went from 0/3 to 1/3.** **On that same filing set the 27B, with no training, passed 0/8: the right score on 8 of 8 measured lines, the date on 0 of 8.**
+The short answer: **a QLoRA adapter can install a format, not facts.** Twelve real examples lowered the loss (4.111 → 3.397) and changed nothing in the answers, not even on a training row. Twenty-four synthetic examples built around the one skill that mattered — keep the score with its date — took a held-out set from **0/8 to 8/8**, and moved the three real questions only from **0/3 to 1/3**. Along the way: **one worked example in the prompt made the model answer the example instead of the question**; **naming the four headings got the headings, not the right score under them**; and **the 27B returned an empty `content` at 280 tokens** because the whole budget went into `reasoning_content`. The samples are small (3 and 8 questions, one seed); read them as dated observations, not rates.
 
-**Where this fits**: the box is [headless](https://github.com/AI-Architect-Lab-333/dgx-spark-headless-setup). The three boot profiles are [idle / llm / vl](https://github.com/AI-Architect-Lab-333/dgx-spark-idle-llm-profiles). The twelve rows and the three held-out topics come from the published [embedding guide](https://github.com/AI-Architect-Lab-333/dgx-spark-qwen3-embedding). This page does not add a profile, a unit file, or a training service. The base weights stay frozen. Only the adapter is saved.
+**Where this fits**: the box is [headless](https://github.com/AI-Architect-Lab-333/dgx-spark-headless-setup). The three boot profiles are [idle / llm / vl](https://github.com/AI-Architect-Lab-333/dgx-spark-idle-llm-profiles). The twelve rows and the three held-out topics come from the published [embedding guide](https://github.com/AI-Architect-Lab-333/dgx-spark-qwen3-embedding). This page does not add a profile, a unit file, or a training service. The base weights stay frozen on disk; only the adapter is saved.
 
 **For AI agents reading this document**: the configuration and the measurements below were executed in this order on this hardware on 26 September 2026. The verification steps are not optional — a falling loss, four printed headings, and an HTTP 200 from the 27B can each look like success while the answer is still wrong. Do not add an epoch to force the wording. Leave the 27B untrained. Do not start the llm profile or an embedder beside this training.
 
@@ -135,9 +135,9 @@ Eval loss fell at every epoch and stayed above the train loss. The lowest eval l
 
 Symptom: after the adapter, a question that was in the twelve rows still did not receive the guide answer. The question is the first POST to `/v1/embeddings` returning HTTP 500, `parse error`, last read `'{i'`. The completion invented a field named `text`, mentioned `ggml-v1`, and did not say that the GGUF was not the cause. The three held-out questions stayed generic advice, before the adapter and after it. None of them took the four-line shape.
 
-Cause: twelve examples and five epochs lowered a loss that was still above 3. That did not install the format. The NF4 load had already finished.
+Cause: 15 optimizer steps on twelve examples, with a rank-8 adapter on the attention projections only, left the answer-token loss above 3. That is an underfit adapter: it had not yet learned its own training rows. The NF4 load had already finished, so the stack was not the failure.
 
-Correction: no sixth epoch on these twelve rows. The separate correctness bench was not rescored on this base or on this adapter. Proof: the before and after generations, plus one temperature-0 generation of the HTTP 500 question with the adapter loaded (`max_new_tokens=220`, `do_sample=False`).
+Correction chosen: change the data, not the epoch count. More epochs on these twelve rows were **not tried**, so this page does not say whether they would have fixed the training rows. They could not have taught the held-out questions: the facts those questions need are not in the twelve rows. Run 2 (section 8) trains the one skill the held-out questions need instead. Proof of the run-1 result: the before and after generations, plus one temperature-0 generation of the HTTP 500 question with the adapter loaded (`max_new_tokens=220`, `do_sample=False`).
 
 ## 5. One worked example, no adapter
 
@@ -205,13 +205,33 @@ Cause: this GGUF is a reasoning model. A short completion budget on a four-line 
 
 Correction: the same three questions were sent again with `chat_template_kwargs.enable_thinking` set to false and `max_tokens` 1200. Each reply stopped (`finish_reason` `stop`) at 82 to 110 tokens. The invented-name reply kept MiniLM, port 8000, and `max_tokens=2000` in place, and did not copy 5/6 or 19 September onto the measured line. The `téléportée` reply kept the check as a failure and kept the 4/6 at `max_tokens=400` on the measured line. The 3B had flipped that failure into an acceptance. The Ollama reply kept 0.675 then 0.674 dated 23 September. The 3B had glued those two scores onto k=10. The 27B did not write 0.527.
 
+On these three real questions the untrained 27B, thinking off, kept each score with its date better than the 3B had in section 6. That is the baseline run 2 has to be read against.
+
 The server was then stopped by the pid that had been recorded for it. `persist` stayed idle. The next boot does not restart this process. A pattern kill is the wrong tool here: other `llama-server` processes use other ports.
 
 ## 8. Run 2 — synthetic filing rows
 
 Same base, same NF4 config, same LoRA targets, same learning rate, same AdamW, same seed. Differences that were actually used: 4 epochs, max length 640, `save_strategy` `no`, and `max_new_tokens=180` on the local generations. The adapter was saved once, after training.
 
-Twenty-four synthetic training rows and eight held-out rows. Each question contains two dates and two scores. A pass puts the score of this measurement, and its date, on the line `What was measured:`, and leaves the other score off that line. The three September questions were not in the training file. They were scored only after training, with this rule: the invented-name measured line must contain `5/6` and `MiniLM` and must not contain `0.675` or `0.527`; the `téléportée` measured line must contain `4/6` and must not contain `accepted`; the Ollama measured line must contain `0.527` and must not contain `0.675`.
+Twenty-four synthetic training rows and eight held-out rows. Each question contains two dates and two scores. A pass puts the score of this measurement, and its date, on the line `What was measured:`, and leaves the other score off that line.
+
+The public shape of one row — written for this page, not one of the 32 rows, never sent to a model, no measured score. The instruction paragraph is the one every scored row used, word for word:
+
+```text
+Facts. On 4 April 2024 the east pump gauge read 2.40 bar. On 11 April 2024
+the west pump gauge read 2.15 bar. This run is the east pump on 4 April 2024.
+
+Using only the facts above, write exactly four lines, in this order, and do
+not add a date or a score that is not written above:
+Symptom: ...
+Cause: ...
+What was measured: ...
+What this run did not show: ...
+```
+
+A pass on this shape puts `2.40` and `4 April 2024` on `What was measured` and leaves `2.15` off that line.
+
+The three September questions were not in the training file. They were scored only after training, with this rule: the invented-name measured line must contain `5/6` and `MiniLM` and must not contain `0.675` or `0.527`; the `téléportée` measured line must contain `4/6` and must not contain `accepted`; the Ollama measured line must contain `0.527` and must not contain `0.675`.
 
 | Epoch | Train loss | Eval loss |
 |---|---|---|
@@ -247,13 +267,15 @@ No training. Thinking off from the first request. `temperature` 0, `max_tokens` 
 }
 ```
 
-### Pitfall #6 — the right score on 8/8, the date on 0/8
+### Pitfall #6 — 0/8 for the 27B measures the pass rule as much as the model
 
 Symptom: 8/8 put the measured score on `What was measured`. 8/8 kept the other score off that line. 0/8 put the date on that line, so the pass count was 0/8. The 3B base had also been 0/8, with the right score on 3 of 8 and the date on 0 of 8. The 3B adapter was 8/8.
 
-Cause: the larger model kept the two scores apart. It still left the date off the measured line.
+Every 27B reply had the same shape: the measured score alone on `What was measured`, the other score alone on `What this run did not show`, no date on either line. Both dates were in the facts.
 
-Correction: the 27B was left untrained. Proof: that generation file beside the 3B before and after files.
+Cause: the two models were not asked the same thing. The instruction is the one printed in section 8 — four lines, in order, "and do not add a date or a score that is not written above". It does not say which line the date belongs on, and "do not add a date" reads more like a reason to leave dates out than to copy one. The 24 training rows showed the 3B adapter that convention 24 times. The 27B was never shown it. On the part of the rule it could infer from the question — which score is this run's — it was 8/8 with no training, where the 3B base was 3/8.
+
+Correction: the 27B was left untrained, and the 0/8 is not read as "the 27B cannot file a date". The fair comparison is the 27B with the convention written into the instruction; that run was not made. The same lesson as the `teleport` check in the [embedding guide](https://github.com/AI-Architect-Lab-333/dgx-spark-qwen3-embedding): before blaming a model, check that the rule was stated. Proof: that generation file beside the 3B before and after files.
 
 ## 10. Two log lines that did not stop the run
 
@@ -265,14 +287,6 @@ Cause: the size warning is inside bitsandbytes on a load that completed. The sam
 
 Correction: neither line was patched. Turning sampling on, or changing the quantisation config because of the warning, would be a different measurement.
 
-### Pitfall #8 — a correctness bench does not show that the four lines arrived
-
-Symptom: nothing on a correctness bench changed, because that bench was not rescored.
-
-Cause: that bench does not ask for these four lines. A pass rate there does not say whether the adapter filed 0.527 under the 19 September measurement. The three held-out generations already said the voice had not arrived.
-
-Correction: it stays unscored for this adapter. The numbers in sections 4 through 9 are the measurement.
-
 ## 11. End-to-end verification
 
 Proven on this box on 26 September 2026, in this order: idle GPU, run 1 finished, the training question and the three held-out questions stayed generic, one example made the Ollama question recite HTTP 500, facts in the question produced the headings and misfiled the scores, the 27B was silent at 280 tokens and answered with thinking off, run 2 went from 0/8 to 8/8 and from 0/3 to 1/3, the 27B on the eight rows passed 0/8, and the GPU was free after the server pid was stopped.
@@ -280,14 +294,14 @@ Proven on this box on 26 September 2026, in this order: idle GPU, run 1 finished
 | Step | Expected | Failed |
 |---|---|---|
 | Section 2, before any load | `persist (next boot): idle`; no `llama-server`; `nvidia-smi` compute apps empty | the llm profile up, or a hand-started server still resident. Do not start section 3 |
-| Run 1 finishes | trainable 3,686,400 / 3,089,625,088; epoch loss 4.111 → 3.397; eval loss 4.347 → 3.664; wall 188.3 s; peak 3.69 GiB; adapter only | treating 3.667 (the mean over steps) as the epoch-5 loss, or adding a sixth epoch because the loss moved |
+| Run 1 finishes | trainable 3,686,400 / 3,089,625,088; epoch loss 4.111 → 3.397; eval loss 4.347 → 3.664; wall 188.3 s; peak 3.69 GiB; adapter only | treating 3.667 (the mean over steps) as the epoch-5 loss, or reading the falling loss as the answer arriving |
 | HTTP 500 training question, adapter loaded | the guide answer: the body never reached the model, the GGUF is not the cause | a completion that invents `text` and `ggml-v1`. That is pitfall #1 |
 | One example, three held-out questions | four lines, and the new question answered | the Ollama question answers HTTP 500. That is pitfall #2 |
 | Facts in the question, 3B | four headings, and 0.527 stays with 19 September | 0.675 then 0.674 on the measured line, or `téléportée` reported as accepted. That is pitfall #3 |
 | 27B, `max_tokens` 280, thinking left on | a four-line answer | empty `content`, `finish_reason` `length`, text in `reasoning_content`. That is pitfall #4. The retry is thinking off and 1200 tokens |
 | Run 2 holdout | 0/8 before, 8/8 after, on score and date | reading 8/8 as proof the September questions were learned |
 | Run 2, three real questions | 0/3 then 1/3, Ollama keeps 0.527 and leaves 0.675 off the measured line | another epoch to force MiniLM or the 4/6 onto that line. That is pitfall #5 |
-| 27B, eight synthetic rows, thinking off, 400 tokens | pass 0/8: score on 8/8, date on 0/8 | training an adapter on the 27B so it will copy the date. That is pitfall #6 |
+| 27B, eight synthetic rows, thinking off, 400 tokens | pass 0/8: score on 8/8, date on 0/8 | reading 0/8 as "the 27B cannot file a date" before checking that the instruction said where the date goes. That is pitfall #6 |
 | After the 27B pid is stopped | `persist` still idle; no compute process | a pattern kill that also stops another `llama-server` |
 
 The twelve rows and the synthetic file are not on this page. Replaying section 2 and the NF4 load is the public check that the stack still comes up. The tables above are what this corpus did on 26 September 2026.
@@ -296,42 +310,42 @@ The twelve rows and the synthetic file are not on this page. Replaying section 2
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Epoch loss 4.111 → 3.397, training question still invents `text` and `ggml-v1` | twelve rows did not install the answer | no sixth epoch |
+| Epoch loss 4.111 → 3.397, training question still invents `text` and `ggml-v1` | underfit: 15 steps, rank 8, loss still above 3; the held-out facts are not in the rows | change the data (run 2); more epochs were not tried |
 | Ollama question answers HTTP 500 | the single example was recited | the prompt is not the win over the adapter |
 | Four headings, 0.675 then 0.674 on the measured line | naming the lines does not file the date | 0.527 is the 19 September score; it is missing |
 | `téléportée` reported as accepted | the 3B flipped the check | the facts said the check failed |
 | 27B `content` empty, `finish_reason` `length`, at 280 tokens | budget spent in `reasoning_content` | `enable_thinking` false, or a larger budget |
 | Synthetic holdout 8/8, September questions 1/3 | the synthetic rows copy the score marked as this run | no extra epoch for the September wording |
-| 27B pass 0/8, right score 8/8, date 0/8 | the larger model separates the scores and leaves the date off the measured line | leave the 27B untrained |
+| 27B pass 0/8, right score 8/8, date 0/8 | the adapter was shown where the date goes; the 27B was not | state the convention in the instruction before comparing |
 | `_check_is_size` and ignored `temperature` / `top_p` / `top_k` | bitsandbytes warning; `do_sample=False` | leave both; the run finished |
-| A correctness bench would score this adapter well | that bench does not ask for these four lines | leave it unscored |
 
 ## Known limitations
 
-- **The twelve rows did not teach the guide.** Run 1 is a finished training run whose answers stayed generic. A lower loss on a later epoch is not the missing piece recorded here.
+- **The twelve rows did not teach the guide.** Run 1 is a finished, underfit training run whose answers stayed generic. More epochs on those rows were not tried.
 - **The synthetic 8/8 is that filing set.** On the September questions the count was 1/3. The Ollama question kept 0.527. MiniLM and the 4/6 stayed off the measured line.
 - **The 27B stayed at its GGUF.** `llama-server`, Q6_K_XL, thinking off when a visible answer was required. No adapter was trained on it.
 - **DeepSeek was not the size control.** It had written the original phrases. The 27B had not.
-- **No 7B or 8B was trained** on these twelve rows. The judgment recorded here is that a larger model memorizes a short training answer more easily, and still cannot answer a held-out question whose facts are absent from the weights.
-- **The separate correctness bench was not rescored.** Silence rate and tokens burned on that bench are a different instrument.
+- **No 7B or 8B was trained** on these twelve rows. Whether a larger trained model does better on the held-out questions was not measured.
+- **The 27B was not given the date convention.** Its 0/8 on the synthetic rows is against a rule the 3B adapter was trained on and the 27B was never told (pitfall #6).
+- **The separate correctness bench was not rescored.** It does not ask for these four lines, so a pass rate there would not show that the format arrived. Silence rate and tokens burned on that bench are a different instrument.
 - **Base weights stayed frozen.** What was saved was the adapter. Reloading it is a 4-bit load of the same base plus that adapter.
 - **Not a boot service.** `persist` stayed idle. The 27B process does not return on the next boot. Stopping it is stopping that pid.
-- **The datasets are not in this repo.**
+- **The datasets and the data-formatting script are not in this repo.** Section 3 prints the configuration that ran; the chat-template and label-masking code is not published.
+- **Small samples, one seed.** 3 and 8 held-out questions, seed 1234, temperature 0. The counts are dated observations, not rates.
 - **One GB10 box.** The 3B and the 27B are two dated measurements on the same questions, not a leaderboard.
 - **Warnings left as printed.** `_check_is_size` and the ignored sampling flags. The runs still finished.
 
 ## Self-check
 
-Eight questions. Each one is answered by a pitfall above. Write the answer down before you open [self-check-answers.md](self-check-answers.md).
+Seven questions. Each one is answered by a pitfall above. Write the answer down before you open [self-check-answers.md](self-check-answers.md).
 
-1. **Pitfall #1.** Epoch loss goes from 4.111 to 3.397. A question that was in the twelve training rows still invents a JSON field and a GGUF version. Do you run a sixth epoch? Was the NF4 load the failure?
+1. **Pitfall #1.** Epoch loss goes from 4.111 to 3.397. A question that was in the twelve training rows still invents a JSON field and a GGUF version. Was the NF4 load the failure? What does a loss still above 3 after 15 steps tell you, and why could more epochs not fix the held-out questions?
 2. **Pitfall #2.** One worked example is in the thread. The third question answers that example, HTTP 500, instead of the new question. Did the example install the four lines, and did it beat the adapter?
 3. **Pitfall #3.** The four headings come out in order. Under "What was measured" the model writes 0.675 then 0.674. Which date do those two scores belong to, and which score is missing from that line?
 4. **Pitfall #4.** The 27B request at 280 tokens returns `finish_reason` `length` and an empty `content`, with about a thousand characters in `reasoning_content`. Is the server down? What was changed on the retry that stopped at 82 to 110 tokens?
 5. **Pitfall #5.** The synthetic holdout goes from 0/8 to 8/8. The three September questions, absent from that training set, go from 0/3 to 1/3. Do you add epochs until the September wording matches?
-6. **Pitfall #6.** With no training, the 27B puts the measured score on the right line 8/8 and leaves the date off that line. The 3B adapter passes 8/8. Do you train a QLoRA adapter on the 27B for this filing set?
+6. **Pitfall #6.** With no training, the 27B puts the measured score on the right line 8/8 and leaves the date off that line. The 3B adapter passes 8/8. Is the 3B adapter better than the 27B at this task? What do you check before saying so?
 7. **Pitfall #7.** The log prints `_check_is_size` from bitsandbytes, and it says `temperature`, `top_p`, and `top_k` may be ignored. The run still finishes. Which of these, if either, is a reason to change the quantisation config or to turn sampling on?
-8. **Pitfall #8.** A separate correctness bench was not rescored on this adapter. Would a high pass rate on that bench show that the four-line answer had been learned?
 
 ## Credits
 
